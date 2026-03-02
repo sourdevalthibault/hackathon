@@ -1,0 +1,266 @@
+import re
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+# =========================
+# ROOT PATH
+# =========================
+ROOT = Path("/home/mohamed/SDD/hackathon/sia-predicting-short-form-video-popularity")
+
+# ---------------------------
+# 1) Helpers ID + lecture safe
+# ---------------------------
+def normalize_id(s: pd.Series) -> pd.Series:
+    s = s.astype(str)
+    s = s.str.replace(r"^VIDEO_", "", regex=True)
+    s = s.str.replace(r"^video_", "", regex=True)
+    s = s.str.replace(r"^Video_", "", regex=True)
+    return s
+
+def read_csv(path) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path)
+        df = df.loc[:, ~df.columns.str.contains(r"^Unnamed", regex=True)]
+        return df
+    except pd.errors.ParserError:
+        pass
+    try:
+        df = pd.read_csv(path, sep=";")
+        df = df.loc[:, ~df.columns.str.contains(r"^Unnamed", regex=True)]
+        return df
+    except pd.errors.ParserError:
+        pass
+    df = pd.read_csv(path, engine="python", on_bad_lines="skip")
+    df = df.loc[:, ~df.columns.str.contains(r"^Unnamed", regex=True)]
+    return df
+
+def ensure_id_col(df: pd.DataFrame, preferred="ID") -> pd.DataFrame:
+    df = df.copy()
+    if "ID" in df.columns:
+        df["ID"] = normalize_id(df["ID"])
+        return df
+    if "id" in df.columns:
+        df = df.rename(columns={"id": "ID"})
+        df["ID"] = normalize_id(df["ID"])
+        return df
+    if "video_id" in df.columns:
+        df = df.rename(columns={"video_id": "ID"})
+        df["ID"] = normalize_id(df["ID"])
+        return df
+    raise ValueError(f"Impossible de trouver une colonne ID/id/video_id dans {df.columns.tolist()}")
+
+def safe_merge(left: pd.DataFrame, right: pd.DataFrame, how="left", suffix="__dup") -> pd.DataFrame:
+    return left.merge(right, on="ID", how=how, suffixes=("", suffix))
+
+def drop_duplicate_suffix_cols(df: pd.DataFrame, suffix="__dup") -> pd.DataFrame:
+    dup_cols = [c for c in df.columns if c.endswith(suffix)]
+    if dup_cols:
+        df = df.drop(columns=dup_cols)
+    return df
+
+# ---------------------------
+# 2) FEProcessor
+# ---------------------------
+_EMOJI_RE = re.compile(r"[\U00010000-\U0010ffff]", flags=re.UNICODE)
+
+class FEProcessor:
+    def __init__(self,
+                 cat_cols=("uploader", "artist", "channel", "album", "track"),
+                 drop_cols=("artists", "format", "description", "filepath", "download_timing", "vid", "uid", "uploader_short"),
+                 extra_drop_cols=()):
+        self.cat_cols = list(cat_cols)
+        self.drop_cols = list(drop_cols) + list(extra_drop_cols)
+        self.freq_maps_ = {}
+        self.fitted_ = False
+
+    @staticmethod
+    def _safe_str(s):
+        return s.fillna("").astype(str)
+
+    def _add_text_feats(self, df: pd.DataFrame) -> pd.DataFrame:
+        desc = self._safe_str(df.get("description", pd.Series([""] * len(df), index=df.index)))
+        df["desc_len"] = desc.str.len()
+        df["num_words"] = desc.str.split().str.len()
+        df["num_hashtags"] = desc.str.count("#")
+        df["num_mentions"] = desc.str.count("@")
+        df["num_emojis"] = desc.apply(lambda x: len(_EMOJI_RE.findall(x)))
+        df["hashtag_ratio"] = df["num_hashtags"] / (df["num_words"] + 1)
+        return df
+
+    def _add_format_feats(self, df: pd.DataFrame) -> pd.DataFrame:
+        if "format" in df.columns:
+            wh = df["format"].astype(str).str.lower().str.split("x", expand=True)
+            if wh.shape[1] >= 2:
+                df["width"] = pd.to_numeric(wh[0], errors="coerce")
+                df["height"] = pd.to_numeric(wh[1], errors="coerce")
+                df["resolution"] = df["width"] * df["height"]
+                df["is_vertical"] = (df["height"] > df["width"]).astype("Int64")
+        return df
+
+    def _add_time_feats(self, df: pd.DataFrame) -> pd.DataFrame:
+        if "download_timing" in df.columns:
+            dt = pd.to_datetime(df["download_timing"], errors="coerce")
+            df["download_hour"] = dt.dt.hour
+            df["download_dow"] = dt.dt.dayofweek
+        return df
+
+    def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        # Sauvegarder l'ID avant toute transformation
+        id_values = normalize_id(df["ID"]).values if "ID" in df.columns else None
+
+        for c in ["album", "artist", "channel", "track", "uploader"]:
+            if c in df.columns:
+                df[c] = df[c].fillna("unknown").astype(str)
+
+        df = self._add_text_feats(df)
+        df = self._add_format_feats(df)
+        df = self._add_time_feats(df)
+
+        for col in self.cat_cols:
+            if col in df.columns:
+                freq = df[col].value_counts(dropna=False)
+                self.freq_maps_[col] = freq.to_dict()
+                df[col + "_freq"] = df[col].map(self.freq_maps_[col]).fillna(0).astype(float)
+
+        # Drop tout SAUF ID
+        cols_to_drop = [c for c in self.drop_cols if c not in ("ID", "id")]
+        df = df.drop(columns=cols_to_drop, errors="ignore")
+
+        # Réinjecter l'ID si besoin
+        if id_values is not None:
+            df["ID"] = id_values
+
+        self.fitted_ = True
+        return df
+
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not self.fitted_:
+            raise RuntimeError("FEProcessor non fit. Appelle fit_transform(train) d'abord.")
+        df = df.copy()
+        # Sauvegarder l'ID avant toute transformation
+        id_values = normalize_id(df["ID"]).values if "ID" in df.columns else None
+
+        for c in ["album", "artist", "channel", "track", "uploader"]:
+            if c in df.columns:
+                df[c] = df[c].fillna("unknown").astype(str)
+
+        df = self._add_text_feats(df)
+        df = self._add_format_feats(df)
+        df = self._add_time_feats(df)
+
+        for col, fmap in self.freq_maps_.items():
+            if col in df.columns:
+                df[col + "_freq"] = df[col].map(fmap).fillna(0).astype(float)
+
+        # Drop tout SAUF ID
+        cols_to_drop = [c for c in self.drop_cols if c not in ("ID", "id")]
+        df = df.drop(columns=cols_to_drop, errors="ignore")
+
+        # Réinjecter l'ID si besoin
+        if id_values is not None:
+            df["ID"] = id_values
+
+        return df
+
+# ---------------------------
+# 3) Charger base train/test + ready
+# ---------------------------
+X_train = ensure_id_col(read_csv(ROOT / "X_train.csv"))
+X_test  = ensure_id_col(read_csv(ROOT / "X_test.csv"))
+
+train_ready = ensure_id_col(read_csv(ROOT / "train_features_ready.csv"))
+test_ready  = ensure_id_col(read_csv(ROOT / "test_features_ready.csv"))
+
+audio_scored = ensure_id_col(read_csv(ROOT / "audio_features_scored.csv"))
+dynamisme    = ensure_id_col(read_csv(ROOT / "features_dynamisme.csv"))
+lumisat      = ensure_id_col(read_csv(ROOT / "features_net_luminosité_saturation.csv"))
+
+top_colors_train = ensure_id_col(read_csv(ROOT / "features_top_colors_train.csv"))
+top_colors_test  = ensure_id_col(read_csv(ROOT / "features_top_colors_test.csv"))
+
+# ---------------------------
+# 4) Préfixer pour éviter collisions
+# ---------------------------
+def add_prefix_except_id(df, prefix):
+    df = df.copy()
+    rename = {c: f"{prefix}{c}" for c in df.columns if c != "ID"}
+    return df.rename(columns=rename)
+
+audio_scored     = add_prefix_except_id(audio_scored, "aud_")
+dynamisme        = add_prefix_except_id(dynamisme, "dyn_")
+lumisat          = add_prefix_except_id(lumisat, "lum_")
+top_colors_train = add_prefix_except_id(top_colors_train, "col_")
+top_colors_test  = add_prefix_except_id(top_colors_test, "col_")
+
+# ---------------------------
+# 5) FEProcessor sur X_train/X_test
+# ---------------------------
+redundant_from_ready = [
+    "aspect_ratio", "video_duration", "release_year", "text_len",
+    "nb_hashtags", "nb_emojis", "nb_mentions", "hashtag_density", "emoji_density",
+    "feat_meteo", "feat_cta", "feat_action",
+    "lang_lang_detected_de", "lang_lang_detected_en", "lang_lang_detected_es",
+    "lang_lang_detected_fr", "lang_lang_detected_it", "lang_lang_detected_unknown"
+]
+
+fe = FEProcessor()  # drop_cols par défaut, ID préservé dans fit_transform/transform
+
+X_train_fe = fe.fit_transform(X_train)
+X_test_fe  = fe.transform(X_test)
+
+# Mettre ID en 1ère colonne
+X_train_fe = X_train_fe[["ID"] + [c for c in X_train_fe.columns if c != "ID"]]
+X_test_fe  = X_test_fe[["ID"]  + [c for c in X_test_fe.columns  if c != "ID"]]
+
+# Nettoyer redondances avec train_ready/test_ready
+X_train_fe = X_train_fe.drop(columns=[c for c in redundant_from_ready if c in X_train_fe.columns], errors="ignore")
+X_test_fe  = X_test_fe.drop(columns=[c for c in redundant_from_ready if c in X_test_fe.columns], errors="ignore")
+
+print("✅ X_train_fe shape:", X_train_fe.shape, "| ID present:", "ID" in X_train_fe.columns)
+print("✅ X_test_fe shape :", X_test_fe.shape,  "| ID present:", "ID" in X_test_fe.columns)
+
+# ---------------------------
+# 6) Build DF finaux = ready + FE + autres features
+# ---------------------------
+train_full = train_ready.copy()
+test_full  = test_ready.copy()
+
+# Merge FE
+train_full = safe_merge(train_full, X_train_fe, how="left")
+test_full  = safe_merge(test_full,  X_test_fe,  how="left")
+
+# Merge audio/dyn/lumi/colors
+train_full = safe_merge(train_full, audio_scored,     how="left")
+train_full = safe_merge(train_full, dynamisme,         how="left")
+train_full = safe_merge(train_full, lumisat,           how="left")
+train_full = safe_merge(train_full, top_colors_train,  how="left")
+
+test_full  = safe_merge(test_full,  audio_scored,      how="left")
+test_full  = safe_merge(test_full,  dynamisme,          how="left")
+test_full  = safe_merge(test_full,  lumisat,            how="left")
+test_full  = safe_merge(test_full,  top_colors_test,    how="left")
+
+# Virer colonnes doublons suffixées
+train_full = drop_duplicate_suffix_cols(train_full)
+test_full  = drop_duplicate_suffix_cols(test_full)
+
+# ---------------------------
+# 7) Sanity checks
+# ---------------------------
+def report(df, name):
+    print(f"\n{name}: shape={df.shape}")
+    print("ID nulls:", df["ID"].isna().sum())
+    print("IDs uniques:", df["ID"].nunique(), "/", len(df))
+
+report(train_full, "train_full")
+report(test_full,  "test_full")
+
+# ---------------------------
+# 8) Save
+# ---------------------------
+train_full.to_csv(ROOT / "train_full_merged.csv", index=False)
+test_full.to_csv(ROOT / "test_full_merged.csv",   index=False)
+
+print("\n✅ Saved: train_full_merged.csv / test_full_merged.csv")
