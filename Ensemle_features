@@ -173,7 +173,7 @@ X_test  = ensure_id_col(read_csv(ROOT / "X_test.csv"))
 train_ready = ensure_id_col(read_csv(ROOT / "train_features_ready.csv"))
 test_ready  = ensure_id_col(read_csv(ROOT / "test_features_ready.csv"))
 
-audio_scored = ensure_id_col(read_csv(ROOT / "audio_features_scored.csv"))
+audio_scored = ensure_id_col(read_csv(ROOT / "audio_features.csv"))
 dynamisme    = ensure_id_col(read_csv(ROOT / "features_dynamisme.csv"))
 lumisat      = ensure_id_col(read_csv(ROOT / "features_net_luminosité_saturation.csv"))
 
