@@ -40,7 +40,7 @@ def merge_tiktok_datasets(file_list, output_name="global_features.csv"):
 
 # --- CONFIGURATION ---
 # Liste tes fichiers ici
-my_files = ['../video_features/keyframes_final_features.csv', '../others/audio.csv', '../others/metadata.csv', '../others/top_colors.csv', '../others/video_text.csv']
+my_files = ['../video_features/keyframes_final_features.csv', '../others/audio.csv', '../others/metadata.csv', '../others/top_colors.csv', '../others/video_text.csv', '../others/attention.csv', '../others/vggish.csv']
 
 # Exécution
 df_competition = merge_tiktok_datasets(my_files)

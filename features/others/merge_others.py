@@ -13,6 +13,32 @@ df_final.to_csv("metadata.csv", index=False)
 print(f"✅ Fusion terminée : {len(df_final)} lignes au total.")
 
 # Charger les deux fichiers
+df1 = pd.read_csv("vggish_pooled_train.csv")
+df2 = pd.read_csv("vggish_pooled_test.csv")
+
+# Coller les lignes (l'un en dessous de l'autre)
+# ignore_index=True permet de refaire une numérotation propre des lignes
+df_final = pd.concat([df1, df2], ignore_index=True)
+df_final = df_final.rename(columns={'ID': 'video_id'})
+# Sauvegarder
+df_final.to_csv("vggish.csv", index=False)
+print(f"✅ Fusion terminée : {len(df_final)} lignes au total.")
+
+
+# Charger les deux fichiers
+df1 = pd.read_csv("attention_train.csv")
+df2 = pd.read_csv("attention_test.csv")
+
+# Coller les lignes (l'un en dessous de l'autre)
+# ignore_index=True permet de refaire une numérotation propre des lignes
+df_final = pd.concat([df1, df2], ignore_index=True)
+df_final = df_final.rename(columns={'ID': 'video_id'})
+# Sauvegarder
+df_final.to_csv("attention.csv", index=False)
+print(f"✅ Fusion terminée : {len(df_final)} lignes au total.")
+
+
+# Charger les deux fichiers
 df1 = pd.read_csv("text_train.csv")
 df2 = pd.read_csv("text_test.csv")
 
@@ -57,5 +83,7 @@ cols = list(df.columns)
 cols = [cols[-1]] + cols[:-1]
 # 3. Appliquer le nouvel ordre au DataFrame
 df = df[cols]
-df_final.to_csv("audio.csv", index=False)
+df = df.rename(columns={'ID': 'video_id'})
+df.to_csv("audio.csv", index=False)
 print(f"✅ Fusion terminée : {len(df)} lignes au total.")
+
