@@ -3,6 +3,10 @@ import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
 import librosa
+
+from sklearn.model_selection import KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import NearestNeighbors
 ### Part 1 ###
 # ======== CONFIG ========
 ROOT = Path("/home/mohamed/SDD/hackathon/sia-predicting-short-form-video-popularity")
